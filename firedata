@@ -1,0 +1,72 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jun 10 17:04:38 2025
+
+@author: Acer
+"""
+
+import os
+import geopandas as gpd
+import pandas as pd
+from shapely.geometry import Point
+import requests
+from zipfile import ZipFile
+from io import BytesIO
+
+# ========== USER INPUT ==========
+aoi_shapefile = "D:/FireData_27May2025/AdminBoundary/UK_State4326.shp"  # <-- Replace with your AOI shapefile path
+output_folder = "D:/DataDownload/fire data_dwl_2024-2025"
+years = [2024, 2025]  # Years to download
+viirs_source = "VIIRS_SNPP_NRT"  # Options: VIIRS_SNPP_NRT, VIIRS_NOAA20_NRT, etc.
+
+# =================================
+
+os.makedirs(output_folder, exist_ok=True)
+
+# Read AOI shapefile
+aoi = gpd.read_file(aoi_shapefile)
+aoi = aoi.to_crs("EPSG:4326")  # Ensure it's in lat/lon
+
+def download_viirs_data(year):
+    base_url = f"https://firms.modaps.eosdis.nasa.gov/data/active_fire/{viirs_source}/{year}/VIIRS_I_SNPP_Global_M6_{year}{month}.csv"
+    months = [f"{month:02d}" for month in range(1, 13)]
+    all_year_data = []
+
+    for month in months:
+        try:
+            url = f"{base_url}/{viirs_source}_Global_{year}{month}.csv"
+            print(f"Downloading: {url}")
+            response = requests.get(url)
+            if response.status_code == 200:
+                df = pd.read_csv(BytesIO(response.content))
+                print(f"Downloaded {len(df)} points for {year}-{month}")
+                all_year_data.append(df)
+            else:
+                print(f"Data not found for {year}-{month}")
+        except Exception as e:
+            print(f"Error downloading {year}-{month}: {e}")
+
+    return pd.concat(all_year_data, ignore_index=True) if all_year_data else pd.DataFrame()
+
+# Process each year
+for year in years:
+    fire_df = download_viirs_data(year)
+
+    if fire_df.empty:
+        print(f"No data found for {year}")
+        continue
+
+    # Convert to GeoDataFrame
+    fire_gdf = gpd.GeoDataFrame(
+        fire_df,
+        geometry=gpd.points_from_xy(fire_df.longitude, fire_df.latitude),
+        crs="EPSG:4326"
+    )
+
+    # Spatial join with AOI
+    fire_within_aoi = gpd.sjoin(fire_gdf, aoi, predicate='within', how='inner')
+
+    # Save to shapefile
+    output_path = os.path.join(output_folder, f"VIIRS_Fires_{year}.shp")
+    fire_within_aoi.to_file(output_path)
+    print(f"Saved filtered data to: {output_path}")
